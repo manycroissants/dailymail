@@ -1,17 +1,10 @@
 name: Daily Intelligence Brief
 
 on:
-  # 8:00 AM SGT = 00:00 UTC
   schedule:
     - cron: "0 0 * * *"
 
-  # Manual trigger from GitHub Actions UI
   workflow_dispatch:
-    inputs:
-      reason:
-        description: "Reason for manual run"
-        required: false
-        default: "Manual test"
 
 jobs:
   send-daily-brief:
@@ -27,7 +20,7 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --prefer-offline || npm install
 
       - name: Run pipeline
         env:
