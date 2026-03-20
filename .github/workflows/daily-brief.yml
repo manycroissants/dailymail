@@ -1,0 +1,42 @@
+name: Daily Intelligence Brief
+
+on:
+  # 8:00 AM SGT = 00:00 UTC
+  schedule:
+    - cron: "0 0 * * *"
+
+  # Manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual run"
+        required: false
+        default: "Manual test"
+
+jobs:
+  send-daily-brief:
+    name: Send Daily Brief
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run pipeline
+        env:
+          NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: node index.js
+
+      - name: Log failure
+        if: failure()
+        run: echo "❌ Pipeline failed at $(date -u)"
