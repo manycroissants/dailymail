@@ -3,7 +3,6 @@ name: Daily Intelligence Brief
 on:
   schedule:
     - cron: "0 0 * * *"
-
   workflow_dispatch:
 
 jobs:
@@ -15,12 +14,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
+          # NO cache line here — this was triggering the lockfile check
 
       - name: Install dependencies
-        run: npm install --prefer-offline || npm install
+        run: npm install
 
       - name: Run pipeline
         env:
