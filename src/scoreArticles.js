@@ -1,109 +1,116 @@
-// src/scoreArticles.js — Scores all articles, passes all through, sorts by score
+// src/scoreArticles.js — Scores each article individually (one Gemini call per article)
+// This prevents a single JSON parse failure from wiping scores for an entire category.
+
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-async function scoreBatch(articles, categoryLabel) {
-  const articleList = articles.map((a, i) => ({
-    index: i,
-    title: a.title,
-    description: (a.description || "").slice(0, 300),
-    source: a.source,
-  }));
+async function scoreOne(article, categoryLabel) {
+  const text = `${article.title}\n\n${(article.description || "").slice(0, 400)}`;
 
-  const prompt = `You are a Senior Editor at The Economist. Score each article on three dimensions.
+  const prompt = `You are a Senior Editor at The Economist. Score this single news article on three dimensions. Think carefully before scoring — most articles should NOT be a 5.
 
 CATEGORY CONTEXT: ${categoryLabel}
 
-SCORING RUBRIC — use the FULL 1-10 range, do NOT cluster around 5:
+ARTICLE:
+Title: ${article.title}
+Source: ${article.source}
+Description: ${(article.description || "").slice(0, 400)}
 
-IMPACT (how many people / how much money / how much policy is affected):
-  10 = global crisis, market-moving event, major war/conflict escalation
-  8-9 = national policy change, central bank decision, major company collapse, geopolitical flashpoint
-  6-7 = regional policy, significant earnings, notable diplomatic development
-  4-5 = local news, minor corporate update, incremental policy
-  1-3 = press release, opinion piece, lifestyle fluff, product review
+---
 
-NOVELTY (how new and surprising is the information):
-  10 = complete surprise, no one saw this coming
-  8-9 = significant new development, changes prior understanding
-  6-7 = meaningful update to ongoing story
-  4-5 = expected development, routine update
-  1-3 = recycled story, no new facts, pure commentary
+IMPACT — how many people or how much capital/policy is affected:
+  9-10 = market-moving event, major geopolitical flashpoint, central bank decision, national emergency
+  7-8  = significant national policy, major corporate action, notable diplomatic development
+  5-6  = regional story, moderate policy update, significant but not major corporate news
+  3-4  = local or niche story, minor update, limited real-world consequence
+  1-2  = press release, product announcement, opinion with no news, lifestyle content
 
-RELEVANCE (fit to: Technology, AI, Southeast Asia, Singapore, US-China, Macroeconomics):
-  10 = directly about one of the core topics with major implications
-  8-9 = closely related, clear connection to a core topic
-  6-7 = tangentially related
-  1-5 = weak or no connection
+NOVELTY — how new and surprising is the information:
+  9-10 = complete surprise, no prior signals, changes the landscape
+  7-8  = important new development, meaningfully advances an ongoing story
+  5-6  = expected development, confirms what was anticipated
+  3-4  = routine update, minor incremental news
+  1-2  = recycled story, no new facts, pure commentary or analysis of old news
 
-CRITICAL RULES:
-- Sponsored content, press releases, product reviews: ALL THREE scores must be 1-2
-- Opinion/commentary pieces with no hard news: Impact 1-3, Novelty 1-3
-- Do NOT give 5/5/5 as a default — differentiate meaningfully
-- Expect your scores to span from 2 to 9 across this batch
+RELEVANCE — fit to this specific category: ${categoryLabel}
+  9-10 = directly and centrally about this category's core topic
+  7-8  = closely related, clear and direct connection
+  5-6  = tangentially related, connection requires a stretch
+  3-4  = weakly related, mostly about something else
+  1-2  = essentially unrelated to this category
 
-Articles:
-${JSON.stringify(articleList, null, 2)}
+SCORING EXAMPLES to calibrate you:
+- "Fed raises rates by 50bps in surprise move" → Impact:9, Novelty:9, Relevance:9 (for Macro)
+- "Apple reports quarterly earnings, beats estimates" → Impact:7, Novelty:6, Relevance:8 (for Tech)
+- "Opinion: Why AI will change everything" → Impact:3, Novelty:2, Relevance:7 (for AI)
+- "New smartwatch has better battery life" → Impact:3, Novelty:4, Relevance:6 (for Tech)
+- "Singapore PM meets Chinese ambassador" → Impact:6, Novelty:5, Relevance:9 (for SEA)
 
-Return ONLY a valid JSON array — no markdown, no explanation:
-[
-  { "index": 0, "impact": 8, "novelty": 6, "relevance": 9, "average": 7.67, "reason": "one specific sentence explaining the scores" }
-]
-average = mean of impact + novelty + relevance, rounded to 2 decimal places.`;
+Return ONLY a valid JSON object — no markdown, no explanation, nothing else:
+{
+  "impact": <integer 1-10>,
+  "novelty": <integer 1-10>,
+  "relevance": <integer 1-10>,
+  "average": <float, mean of the three scores rounded to 2 decimal places>,
+  "reason": "<one specific sentence explaining why you gave these scores>"
+}`;
 
   try {
     const result = await model.generateContent(prompt);
     const raw = result.response.text().trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
-    const scores = JSON.parse(raw);
 
-    return articles.map((a, i) => {
-      const s = scores.find((x) => x.index === i) || {};
-      const impact    = s.impact    || 5;
-      const novelty   = s.novelty   || 5;
-      const relevance = s.relevance || 5;
-      const average   = s.average   || parseFloat(((impact + novelty + relevance) / 3).toFixed(2));
-      return {
-        ...a,
-        score_impact:    impact,
-        score_novelty:   novelty,
-        score_relevance: relevance,
-        score_average:   average,
-        score_reason:    s.reason || "",
-      };
-    });
+    // Extra safety: extract JSON object even if there's surrounding text
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON object found in response");
+
+    const s = JSON.parse(jsonMatch[0]);
+
+    const impact    = Math.min(10, Math.max(1, parseInt(s.impact)    || 5));
+    const novelty   = Math.min(10, Math.max(1, parseInt(s.novelty)   || 5));
+    const relevance = Math.min(10, Math.max(1, parseInt(s.relevance) || 5));
+    const average   = parseFloat(((impact + novelty + relevance) / 3).toFixed(2));
+
+    return { ...article, score_impact: impact, score_novelty: novelty, score_relevance: relevance, score_average: average, score_reason: s.reason || "" };
+
   } catch (err) {
-    console.error(`  ✗ Scoring error [${categoryLabel}]: ${err.message}`);
-    return articles.map((a) => ({
-      ...a,
-      score_impact: 5, score_novelty: 5, score_relevance: 5,
-      score_average: 5.0, score_reason: "Scoring unavailable",
-    }));
+    // On failure, log the raw response so we can debug, and give a neutral-low score
+    // (not 5/5/5 which looks like "scored successfully")
+    console.error(`  ✗ Score parse error for "${article.title}": ${err.message}`);
+    return { ...article, score_impact: 4, score_novelty: 4, score_relevance: 4, score_average: 4.0, score_reason: "Scoring failed — defaulting to 4" };
   }
 }
 
 async function scoreAllArticles(newsByCategory) {
-  console.log("\n🎯 Scoring articles...");
+  console.log("\n🎯 Scoring articles (one call per article for accuracy)...");
   const scored = {};
 
   for (const [label, { emoji, articles }] of Object.entries(newsByCategory)) {
     if (!articles || articles.length === 0) {
+      console.log(`  → [${label}] 0 articles, skipping`);
       scored[label] = { emoji, articles: [] };
       continue;
     }
-    console.log(`  → [${label}] scoring ${articles.length} articles...`);
-    const result = await scoreBatch(articles, label);
 
-    // Sort by score descending so best articles appear first
-    result.sort((a, b) => b.score_average - a.score_average);
+    console.log(`  → [${label}] scoring ${articles.length} articles individually...`);
+    const results = [];
 
-    // Log score distribution for debugging
-    const scores = result.map((a) => a.score_average.toFixed(1));
-    console.log(`     Scores: [${scores.join(", ")}]`);
+    for (const article of articles) {
+      const scoredArticle = await scoreOne(article, label);
+      results.push(scoredArticle);
+      process.stdout.write(`     "${article.title.slice(0, 50)}..." → ${scoredArticle.score_average}/10\n`);
+      // Gemini free tier: 10 RPM → 6s between calls
+      await new Promise((r) => setTimeout(r, 6200));
+    }
 
-    scored[label] = { emoji, articles: result };
-    await new Promise((r) => setTimeout(r, 6000));
+    // Sort best-first
+    results.sort((a, b) => b.score_average - a.score_average);
+
+    const distribution = results.map((a) => a.score_average.toFixed(1));
+    console.log(`     Final order: [${distribution.join(", ")}]`);
+
+    scored[label] = { emoji, articles: results };
   }
 
   return scored;
