@@ -1,4 +1,4 @@
-// src/clusterNews.js — Clusters same-event articles, generates unified summaries
+// src/clusterNews.js — Clusters same-event articles, 30-word summary cap
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -27,6 +27,14 @@ function applyBlueHighlights(summary, allSourceTexts) {
   return highlighted;
 }
 
+// Hard truncate to 30 words as a safety net
+function enforce30Words(text) {
+  if (!text) return text;
+  const words = text.trim().split(/\s+/);
+  if (words.length <= 30) return text;
+  return words.slice(0, 30).join(" ") + "…";
+}
+
 function guessBiasLabel(sources) {
   const text = sources.join(" ").toLowerCase();
   if (/xinhua|global times|cgtn|china daily/.test(text)) return "[State-Affiliated / China]";
@@ -39,45 +47,49 @@ function guessBiasLabel(sources) {
 
 async function buildSingleCluster(article) {
   const sourceText = (article.content || article.description || article.title).slice(0, 2500);
-  const prompt = `Summarize this news article in 1-2 sentences (max 40 words). Be specific — name actors, numbers, consequences. No fluff.
+
+  const prompt = `Summarize this news article in ONE sentence. Hard limit: 30 words maximum. Be specific — include the key actor, action, and consequence. No filler words.
 
 Title: ${article.title}
 Content: ${sourceText}
 
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON (no markdown):
 {
-  "summary": "...",
+  "summary": "Your 30-word-max sentence here.",
   "bias_label": "One of: [Singapore-Centric],[US-Centric],[Western Media],[State-Affiliated],[China-Centric],[Financial/Markets],[Neutral/Analytical],[Right-Leaning],[Left-Leaning],[Multi-Source],[General]",
   "bias_note": "One sentence on framing.",
   "is_polarized": false,
   "counter_headline": null
 }`;
+
   try {
     const result = await model.generateContent(prompt);
     const raw = result.response.text().trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
     const parsed = JSON.parse(raw);
+    const summary = enforce30Words(parsed.summary);
     return {
       type: "single",
       headline: article.title,
-      summary: applyBlueHighlights(parsed.summary, [sourceText]),
+      summary: applyBlueHighlights(summary, [sourceText]),
       bias_label: parsed.bias_label || guessBiasLabel([article.source]),
       bias_note: parsed.bias_note || "",
       is_polarized: !!parsed.is_polarized,
       counter_headline: parsed.counter_headline || null,
-      score_average: article.score_average || 0,
-      score_impact: article.score_impact || 0,
-      score_novelty: article.score_novelty || 0,
+      score_average:   article.score_average   || 0,
+      score_impact:    article.score_impact    || 0,
+      score_novelty:   article.score_novelty   || 0,
       score_relevance: article.score_relevance || 0,
-      score_reason: article.score_reason || "",
+      score_reason:    article.score_reason    || "",
       sources: [{ title: article.title, url: article.url, source: article.source }],
     };
   } catch (err) {
     console.error(`  ✗ Single cluster error: ${err.message}`);
     return {
-      type: "single", headline: article.title,
-      summary: article.description || article.title,
-      bias_label: guessBiasLabel([article.source]), bias_note: "",
-      is_polarized: false, counter_headline: null,
+      type: "single",
+      headline: article.title,
+      summary: enforce30Words(article.description || article.title),
+      bias_label: guessBiasLabel([article.source]),
+      bias_note: "", is_polarized: false, counter_headline: null,
       score_average: article.score_average || 0,
       score_impact: article.score_impact || 0,
       score_novelty: article.score_novelty || 0,
@@ -93,36 +105,39 @@ async function buildMultiCluster(articles, eventTitle) {
   const combinedContext = articles.map((a, i) => `[${a.source}]\n${allTexts[i]}`).join("\n---\n");
   const avgScore = (articles.reduce((s, a) => s + (a.score_average || 0), 0) / articles.length).toFixed(1);
 
-  const prompt = `Multiple sources cover the same event. Write ONE unified 2-3 sentence summary. Be specific.
+  const prompt = `Multiple sources cover the same event. Write ONE unified sentence (max 30 words) that synthesises the key fact, actor, and implication.
 
 Event: ${eventTitle}
-${combinedContext.slice(0, 3500)}
+${combinedContext.slice(0, 3000)}
 
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON (no markdown):
 {
-  "headline": "Single definitive headline (max 15 words)",
-  "summary": "2-3 sentence synthesis. What happened. Key details/numbers. Implications.",
+  "headline": "Single definitive headline, max 15 words.",
+  "summary": "One sentence, max 30 words, synthesising all sources.",
   "bias_label": "One of: [Singapore-Centric],[US-Centric],[Western Media],[State-Affiliated],[China-Centric],[Financial/Markets],[Neutral/Analytical],[Multi-Source]",
-  "bias_note": "Note framing differences between sources.",
+  "bias_note": "Note any framing differences between sources.",
   "is_polarized": false,
   "counter_headline": null
 }`;
+
   try {
     const result = await model.generateContent(prompt);
     const raw = result.response.text().trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
     const parsed = JSON.parse(raw);
+    const summary = enforce30Words(parsed.summary);
     return {
-      type: "cluster", headline: parsed.headline || eventTitle,
-      summary: applyBlueHighlights(parsed.summary, allTexts),
+      type: "cluster",
+      headline: parsed.headline || eventTitle,
+      summary: applyBlueHighlights(summary, allTexts),
       bias_label: parsed.bias_label || guessBiasLabel(articles.map((a) => a.source)),
       bias_note: parsed.bias_note || "",
       is_polarized: !!parsed.is_polarized,
       counter_headline: parsed.counter_headline || null,
-      score_average: parseFloat(avgScore),
-      score_impact: Math.max(...articles.map((a) => a.score_impact || 0)),
-      score_novelty: Math.max(...articles.map((a) => a.score_novelty || 0)),
+      score_average:   parseFloat(avgScore),
+      score_impact:    Math.max(...articles.map((a) => a.score_impact    || 0)),
+      score_novelty:   Math.max(...articles.map((a) => a.score_novelty   || 0)),
       score_relevance: Math.max(...articles.map((a) => a.score_relevance || 0)),
-      score_reason: `Clustered from ${articles.length} sources`,
+      score_reason:    `Clustered from ${articles.length} sources`,
       sources: articles.map((a) => ({ title: a.title, url: a.url, source: a.source })),
     };
   } catch (err) {
@@ -136,11 +151,11 @@ async function clusterCategory(articles, categoryLabel) {
   if (articles.length === 1) return [await buildSingleCluster(articles[0])];
 
   const articleList = articles.map((a, i) => ({ index: i, title: a.title, source: a.source }));
-  const prompt = `Group these articles by the specific EVENT they cover. Only group articles reporting on the SAME specific event, not just the same broad topic.
+  const prompt = `Group these articles by the specific EVENT they cover. Only group articles reporting on the SAME specific event — not just the same broad topic.
 
 ${JSON.stringify(articleList, null, 2)}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON (no markdown):
 [{ "group_id": 0, "indices": [0, 2], "event_title": "Short event label" }]`;
 
   let groups;
