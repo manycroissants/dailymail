@@ -19,7 +19,6 @@ async function fetchArticlesForCategory(cat) {
     language:       "en",
     size:           10,
     prioritydomain: "top",
-    timeframe:      2880,   // 2880 minutes = 48 hours (max for free tier in minutes)
     removeduplicate: 1,
   };
 
