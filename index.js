@@ -1,30 +1,33 @@
-// index.js — Orchestrator: fetch → summarize → build email → send
+// index.js — Full pipeline: fetch → score → cluster → email
 require("dotenv").config();
 
-const { fetchAllNews } = require("./src/fetchNews");
-const { summarizeAll } = require("./src/summarize");
-const { buildEmailHTML } = require("./src/template");
-const { sendDailyBrief } = require("./src/mailer");
+const { fetchAllNews }     = require("./src/fetchNews");
+const { scoreAllArticles } = require("./src/scoreArticles");
+const { clusterAllNews }   = require("./src/clusterNews");
+const { buildEmailHTML }   = require("./src/template");
+const { sendDailyBrief }   = require("./src/mailer");
 
 async function runDailyBrief() {
   console.log("🚀 Daily Intelligence Brief pipeline starting...\n");
-  const startTime = Date.now();
+  const t0 = Date.now();
 
-  // 1. Fetch from NewsData.io
+  // 1. Fetch — NewsData.io with hard filters (last 24h, top domains, no blogs/PR)
   const rawNews = await fetchAllNews();
 
-  // 2. Summarize + bias-tag via Gemini
-  const enrichedNews = await summarizeAll(rawNews);
+  // 2. Score — Senior Editor gatekeeper (discard score ≤ 7)
+  const scoredNews = await scoreAllArticles(rawNews);
 
-  // 3. Build HTML
-  console.log("\n🎨 Building email template...");
-  const html = buildEmailHTML(enrichedNews);
+  // 3. Cluster — group same-event coverage, unified summaries
+  const clusteredNews = await clusterAllNews(scoredNews);
 
-  // 4. Send via Resend
+  // 4. Build HTML
+  console.log("\n🎨 Building email...");
+  const html = buildEmailHTML(clusteredNews);
+
+  // 5. Send
   const result = await sendDailyBrief(html);
 
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`\n✅ Pipeline complete in ${elapsed}s`);
+  console.log(`\n✅ Done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   return result;
 }
 
