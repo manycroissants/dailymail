@@ -1,27 +1,63 @@
-// src/fetchNews.js
-// Strategy: filter by datatype=news,analysis at API level (excludes press releases,
-// blogs, sponsored content, reviews). Source blocklist applied client-side as backup
-// since excludedomain is capped at 5 and we have more than 5 bad sources.
+// src/fetchNews.js — Quality-first: per-category domainurl allowlists (max 5 per API call)
 const axios = require("axios");
 
 const NEWSDATA_API_KEY = process.env.NEWSDATA_API_KEY;
 const BASE_URL = "https://newsdata.io/api/1/latest";
 
-// Client-side source blocklist — catches anything that slips through
-// (excludedomain at API level is capped at 5, so we use this as a safety net)
-const BLOCKED_SOURCES = new Set([
-  "variety", "onefootball", "benzinga", "si", "yahoo",
-  "hindustantimes", "bangkokpost", "thesun", "toi", "timesofindia",
-  "dailymail", "nypost", "tmz", "buzzfeed", "globenewswire",
-  "prnewswire", "businesswire", "accesswire",
-]);
+// ── Per-category allowlists (domainurl, max 5 per call) ──────────────────────
+//
+// GENERAL / MACRO / US-CHINA:
+//   reuters.com       — world's largest wire service, gold standard for factual news
+//   bbc.com           — global reach, strong editorial standards
+//   ft.com            — Financial Times, best for macro/markets (WSJ is heavily paywalled)
+//   theguardian.com   — strong international coverage, independent
+//   bloomberg.com     — authoritative on markets, finance, geopolitics
+//
+// SINGAPORE / SEA:
+//   channelnewsasia.com — primary English broadcaster in SEA
+//   straitstimes.com    — Singapore's newspaper of record
+//   reuters.com         — wire service covers SEA extensively
+//   bbc.com             — BBC SEA desk
+//   theguardian.com     — SEA/Asia Pacific coverage
+//
+// TECHNOLOGY:
+//   techcrunch.com       — startup/VC/product launches
+//   theverge.com         — consumer tech, Big Tech policy
+//   wired.com            — tech culture, policy, science
+//   arstechnica.com      — deep technical reporting
+//   technologyreview.com — MIT Tech Review, research-grade AI/tech analysis
 
 const INTERESTS = [
-  { label: "Technology & Consumer Technology", emoji: "💻", query: "technology" },
-  { label: "Artificial Intelligence",          emoji: "🤖", query: "artificial intelligence" },
-  { label: "South-East Asia & Singapore",      emoji: "🌏", query: "Singapore" },
-  { label: "US-China Relations",               emoji: "🌐", query: "US China" },
-  { label: "Macroeconomics",                   emoji: "📈", query: "economy inflation" },
+  {
+    label: "Technology & Consumer Technology",
+    emoji: "💻",
+    query: "technology",
+    domainurl: "techcrunch.com,theverge.com,wired.com,arstechnica.com,technologyreview.com",
+  },
+  {
+    label: "Artificial Intelligence",
+    emoji: "🤖",
+    query: "artificial intelligence",
+    domainurl: "techcrunch.com,wired.com,technologyreview.com,theverge.com,reuters.com",
+  },
+  {
+    label: "South-East Asia & Singapore",
+    emoji: "🌏",
+    query: "Singapore Southeast Asia",
+    domainurl: "channelnewsasia.com,straitstimes.com,reuters.com,bbc.com,theguardian.com",
+  },
+  {
+    label: "US-China Relations",
+    emoji: "🌐",
+    query: "US China",
+    domainurl: "reuters.com,bbc.com,ft.com,bloomberg.com,theguardian.com",
+  },
+  {
+    label: "Macroeconomics",
+    emoji: "📈",
+    query: "economy inflation",
+    domainurl: "reuters.com,ft.com,bloomberg.com,bbc.com,theguardian.com",
+  },
 ];
 
 async function fetchArticlesForCategory(cat) {
@@ -30,11 +66,10 @@ async function fetchArticlesForCategory(cat) {
     q:               cat.query,
     language:        "en",
     size:            10,
-    prioritydomain:  "top",
     removeduplicate: 1,
-    // Filter content type at API level — excludes press releases, blogs,
-    // sponsored content, reviews, podcasts before they consume our 10-article quota
-    datatype:        "news,analysis",
+    domainurl:       cat.domainurl,
+    // NOTE: prioritydomain removed — unnecessary when we specify exact domains
+    // NOTE: timeframe removed — paid feature only
   };
 
   try {
@@ -47,17 +82,9 @@ async function fetchArticlesForCategory(cat) {
     }
 
     const raw = res.data.results || [];
+    console.log(`     → ${raw.length} articles from [${cat.domainurl}]`);
 
-    // Client-side backup filter for any remaining bad sources
-    const filtered = raw.filter((a) => {
-      const src = (a.source_id || "").toLowerCase();
-      return !BLOCKED_SOURCES.has(src);
-    });
-
-    const blocked = raw.length - filtered.length;
-    console.log(`     → ${filtered.length} articles (${blocked} blocked by source filter)`);
-
-    return filtered.map((a) => ({
+    return raw.map((a) => ({
       title:       a.title       || "No title",
       description: a.description || "",
       content:     a.content     || a.description || a.title || "",
@@ -76,10 +103,11 @@ async function fetchArticlesForCategory(cat) {
 }
 
 async function fetchAllNews() {
-  console.log("📡 Fetching news (datatype=news,analysis — press releases/blogs/sponsored excluded at API level)...");
+  console.log("📡 Fetching news (domainurl allowlist — quality sources only)...");
   const results = {};
   for (const cat of INTERESTS) {
-    console.log(`  → ${cat.label} [query="${cat.query}"]`);
+    console.log(`  → ${cat.label}`);
+    console.log(`     domains: ${cat.domainurl}`);
     const articles = await fetchArticlesForCategory(cat);
     results[cat.label] = { emoji: cat.emoji, articles };
     await new Promise((r) => setTimeout(r, 2000));
