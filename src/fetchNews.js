@@ -1,66 +1,111 @@
-// src/fetchNews.js — Quality-first: per-category domainurl allowlists (max 5 per API call)
+// src/fetchNews.js
+// Guardian API is PRIMARY for Tech, AI, US-China, Macro (full article body available)
+// NewsData.io is SECONDARY for SEA/Singapore only (Guardian SEA coverage is thin)
 const axios = require("axios");
 
-const NEWSDATA_API_KEY = process.env.NEWSDATA_API_KEY;
-const BASE_URL = "https://newsdata.io/api/1/latest";
+const NEWSDATA_API_KEY  = process.env.NEWSDATA_API_KEY;
+const GUARDIAN_API_KEY  = process.env.GUARDIAN_API_KEY;
 
-// ── Per-category allowlists (domainurl, max 5 per call) ──────────────────────
-//
-// GENERAL / MACRO / US-CHINA:
-//   reuters.com       — world's largest wire service, gold standard for factual news
-//   bbc.com           — global reach, strong editorial standards
-//   ft.com            — Financial Times, best for macro/markets (WSJ is heavily paywalled)
-//   theguardian.com   — strong international coverage, independent
-//   bloomberg.com     — authoritative on markets, finance, geopolitics
-//
-// SINGAPORE / SEA:
-//   channelnewsasia.com — primary English broadcaster in SEA
-//   straitstimes.com    — Singapore's newspaper of record
-//   reuters.com         — wire service covers SEA extensively
-//   bbc.com             — BBC SEA desk
-//   theguardian.com     — SEA/Asia Pacific coverage
-//
-// TECHNOLOGY:
-//   techcrunch.com       — startup/VC/product launches
-//   theverge.com         — consumer tech, Big Tech policy
-//   wired.com            — tech culture, policy, science
-//   arstechnica.com      — deep technical reporting
-//   technologyreview.com — MIT Tech Review, research-grade AI/tech analysis
+const GUARDIAN_BASE = "https://content.guardianapis.com/search";
+const NEWSDATA_BASE  = "https://newsdata.io/api/1/latest";
 
-const INTERESTS = [
+// ── Guardian section + query config ─────────────────────────────────────────
+// Sections: technology | business | world | science | environment
+// show-fields=bodyText gives full article text — huge benefit for scoring quality
+// order-by=newest ensures freshest articles
+// page-size=10 = max per call on free tier
+
+const GUARDIAN_CATEGORIES = [
   {
     label: "Technology & Consumer Technology",
     emoji: "💻",
-    query: "technology",
-    domainurl: "techcrunch.com,theverge.com,wired.com,arstechnica.com,technologyreview.com",
+    section: "technology",
+    q: "technology OR semiconductor OR software OR cybersecurity OR hardware",
+    // Exclude lifestyle/gadget fluff within the tech section
+    tag: "-technology/games",
   },
   {
     label: "Artificial Intelligence",
     emoji: "🤖",
-    query: "artificial intelligence",
-    domainurl: "techcrunch.com,wired.com,technologyreview.com,theverge.com,reuters.com",
+    section: "technology",
+    q: "artificial intelligence OR machine learning OR large language model OR AI OR OpenAI OR Google DeepMind OR Anthropic",
+    tag: "",
   },
+  {
+    label: "US-China Relations",
+    emoji: "🌐",
+    section: "world",
+    q: "China US relations OR China trade OR Taiwan OR US tariff China OR US China sanctions OR US China diplomacy",
+    tag: "",
+  },
+  {
+    label: "Macroeconomics",
+    emoji: "📈",
+    // business section for markets/central bank; world for broader economic policy
+    section: "business",
+    q: "Federal Reserve OR interest rates OR inflation OR GDP OR recession OR central bank OR global economy OR bond market",
+    tag: "",
+  },
+];
+
+// SEA/Singapore stays on NewsData — Guardian coverage of the region is thin
+const NEWSDATA_CATEGORIES = [
   {
     label: "South-East Asia & Singapore",
     emoji: "🌏",
     query: "Singapore Southeast Asia",
     domainurl: "channelnewsasia.com,straitstimes.com,reuters.com,bbc.com,theguardian.com",
   },
-  {
-    label: "US-China Relations",
-    emoji: "🌐",
-    query: "US China",
-    domainurl: "reuters.com,bbc.com,ft.com,bloomberg.com,theguardian.com",
-  },
-  {
-    label: "Macroeconomics",
-    emoji: "📈",
-    query: "economy inflation",
-    domainurl: "reuters.com,ft.com,bloomberg.com,bbc.com,theguardian.com",
-  },
 ];
 
-async function fetchArticlesForCategory(cat) {
+// ── Guardian fetcher ─────────────────────────────────────────────────────────
+async function fetchFromGuardian(cat) {
+  const params = {
+    "api-key":     GUARDIAN_API_KEY,
+    q:             cat.q,
+    section:       cat.section,
+    "order-by":    "newest",
+    "page-size":   10,
+    // Pull full body text — this is the key advantage over NewsData
+    "show-fields": "bodyText,trailText,headline,shortUrl,wordcount",
+  };
+  if (cat.tag) params.tag = cat.tag;
+
+  try {
+    const res = await axios.get(GUARDIAN_BASE, { params, timeout: 20000 });
+    const status = res.data?.response?.status;
+    const total  = res.data?.response?.total || 0;
+    console.log(`     Guardian status: ${status} | total: ${total}`);
+
+    if (status !== "ok") {
+      console.error(`     Guardian error:`, JSON.stringify(res.data));
+      return [];
+    }
+
+    const results = res.data?.response?.results || [];
+    return results.map((a) => {
+      const fields = a.fields || {};
+      return {
+        title:       fields.headline  || a.webTitle || "No title",
+        description: fields.trailText || "",
+        // Full body text available — strip HTML tags for clean text
+        content:     (fields.bodyText || fields.trailText || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+        url:         fields.shortUrl  || a.webUrl || "#",
+        source:      "theguardian",
+        pubDate:     a.webPublicationDate || "",
+        category:    cat.label,
+        emoji:       cat.emoji,
+      };
+    });
+  } catch (err) {
+    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    console.error(`     Guardian FETCH ERROR: ${detail}`);
+    return [];
+  }
+}
+
+// ── NewsData fetcher (SEA only) ──────────────────────────────────────────────
+async function fetchFromNewsData(cat) {
   const params = {
     apikey:          NEWSDATA_API_KEY,
     q:               cat.query,
@@ -68,22 +113,18 @@ async function fetchArticlesForCategory(cat) {
     size:            10,
     removeduplicate: 1,
     domainurl:       cat.domainurl,
-    // NOTE: prioritydomain removed — unnecessary when we specify exact domains
-    // NOTE: timeframe removed — paid feature only
   };
 
   try {
-    const res = await axios.get(BASE_URL, { params, timeout: 20000 });
-    console.log(`     API status: ${res.data.status} | totalResults: ${res.data.totalResults}`);
+    const res = await axios.get(NEWSDATA_BASE, { params, timeout: 20000 });
+    console.log(`     NewsData status: ${res.data.status} | totalResults: ${res.data.totalResults}`);
 
     if (res.data.status !== "success") {
-      console.error(`     API error:`, JSON.stringify(res.data));
+      console.error(`     NewsData error:`, JSON.stringify(res.data));
       return [];
     }
 
     const raw = res.data.results || [];
-    console.log(`     → ${raw.length} articles from [${cat.domainurl}]`);
-
     return raw.map((a) => ({
       title:       a.title       || "No title",
       description: a.description || "",
@@ -94,24 +135,36 @@ async function fetchArticlesForCategory(cat) {
       category:    cat.label,
       emoji:       cat.emoji,
     }));
-
   } catch (err) {
     const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-    console.error(`     FETCH ERROR: ${detail}`);
+    console.error(`     NewsData FETCH ERROR: ${detail}`);
     return [];
   }
 }
 
+// ── Main ─────────────────────────────────────────────────────────────────────
 async function fetchAllNews() {
-  console.log("📡 Fetching news (domainurl allowlist — quality sources only)...");
+  console.log("📡 Fetching news (Guardian PRIMARY for Tech/AI/US-China/Macro | NewsData for SEA)...");
   const results = {};
-  for (const cat of INTERESTS) {
-    console.log(`  → ${cat.label}`);
-    console.log(`     domains: ${cat.domainurl}`);
-    const articles = await fetchArticlesForCategory(cat);
+
+  // Guardian categories
+  for (const cat of GUARDIAN_CATEGORIES) {
+    console.log(`  → [Guardian] ${cat.label}`);
+    const articles = await fetchFromGuardian(cat);
     results[cat.label] = { emoji: cat.emoji, articles };
-    await new Promise((r) => setTimeout(r, 2000));
+    console.log(`     → ${articles.length} articles`);
+    await new Promise((r) => setTimeout(r, 1000));
   }
+
+  // NewsData categories (SEA)
+  for (const cat of NEWSDATA_CATEGORIES) {
+    console.log(`  → [NewsData] ${cat.label}`);
+    const articles = await fetchFromNewsData(cat);
+    results[cat.label] = { emoji: cat.emoji, articles };
+    console.log(`     → ${articles.length} articles`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
   return results;
 }
 
