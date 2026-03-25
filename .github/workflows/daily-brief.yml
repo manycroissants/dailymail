@@ -1,9 +1,8 @@
 name: Daily Intelligence Brief
 
 on:
-  # 7:00 PM Singapore Time = 11:00 UTC
   schedule:
-    - cron: "0 11 * * *"
+    - cron: "0 11 * * *"   # 7:00 PM SGT = 11:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -25,9 +24,10 @@ jobs:
 
       - name: Run pipeline
         env:
-          NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NEWSDATA_API_KEY:  ${{ secrets.NEWSDATA_API_KEY }}
+          GUARDIAN_API_KEY:  ${{ secrets.GUARDIAN_API_KEY }}
+          GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
+          RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
         run: node index.js
 
       - name: Log failure
