@@ -30,13 +30,11 @@ function formatDate() {
 function buildScoreBlock(cluster) {
   const avg = cluster.score_average || 0;
   const c = getScoreColor(avg);
+  const label = avg >= 8.5 ? "🔥 Must-Read" : avg >= 7 ? "⭐ Top Story" : avg >= 5 ? "📌 Notable" : "📉 Low Signal";
   return `<table cellpadding="0" cellspacing="0" style="display:inline-table;margin-right:6px;">
     <tr>
       <td style="background:${c.bg};border:1px solid ${c.border};border-radius:5px;padding:3px 9px;">
-        <span style="font-size:11px;font-weight:800;color:${c.text};">⭐ ${avg.toFixed(1)}/10</span>
-        <span style="font-size:10px;color:${c.text};margin-left:4px;">
-          I:${cluster.score_impact} N:${cluster.score_novelty} R:${cluster.score_relevance}
-        </span>
+        <span style="font-size:11px;font-weight:800;color:${c.text};"> ${label} ${avg.toFixed(1)}/10</span>
       </td>
     </tr>
   </table>`;
@@ -189,7 +187,7 @@ function buildEmailHTML(clusteredByCategory) {
   <!-- LEGEND -->
   <tr><td style="background:#eff6ff;padding:9px 20px;border-left:1px solid #dbeafe;border-right:1px solid #dbeafe;">
     <p style="margin:0;font-size:11px;color:#1e40af;line-height:1.6;">
-      <strong>Score key:</strong> ⭐ I = Impact · N = Novelty · R = Relevance (each /10) &nbsp;·&nbsp;
+      <strong>Score key:</strong> 🔥 Must-Read ≥8.5 · ⭐ Top Story ≥7 · 📌 Notable ≥5 · 📉 Low Signal &lt;5 &nbsp;·&nbsp;
       <span style="color:#2563eb;font-weight:bold;">Blue bold</span> = verbatim phrase from source &nbsp;·&nbsp;
       🔗 = multiple outlets, same event
     </p>

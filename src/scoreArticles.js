@@ -1,76 +1,165 @@
-// src/scoreArticles.js — One Gemini call per article, uses full body text from Guardian
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+// src/scoreArticles.js — Rule-based deterministic scorer (no LLM)
+// Scoring is purely keyword/regex based — fast, consistent, no API calls needed.
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+// ── Rule 1: Geopolitical Weight ──────────────────────────────────────────────
+const GEO_TIER1 = ["usa", "united states", "china", "beijing", "washington"];
+const GEO_TIER2 = ["singapore", " sg "];
+const GEO_TIER3 = ["vietnam", "indonesia", "malaysia", "thailand", "philippines"];
+// All other country names that would trigger Tier 4 penalty
+const GEO_TIER4 = [
+  "belgium", "peru", "argentina", "brazil", "nigeria", "kenya", "egypt",
+  "pakistan", "bangladesh", "ukraine", "russia", "france", "germany",
+  "italy", "spain", "netherlands", "sweden", "norway", "denmark",
+  "australia", "new zealand", "canada", "mexico", "colombia", "chile",
+  "saudi arabia", "iran", "iraq", "turkey", "israel", "south africa",
+  "portugal", "poland", "czech", "hungary", "romania", "greece",
+  "switzerland", "austria", "finland", "ireland", "scotland", "wales",
+];
 
-async function scoreOne(article, categoryLabel) {
-  // Guardian gives full body text — use up to 800 chars for much richer context
-  const bodyContext = (article.content || article.description || "").slice(0, 800);
+// ── Rule 2: Protagonist Filter ───────────────────────────────────────────────
+const WORLD_LEADERS = [
+  "biden", "trump", "xi jinping", "xi ", "lawrence wong", "putin",
+  "zelensky", "modi", "macron", "scholz", "sunak", "starmer",
+  "netanyahu", "erdogan", "marcos", "prabowo", "anwar ibrahim",
+  "fumio kishida", "yoon suk", "janet yellen", "jerome powell",
+];
+const TECH_TITANS = [
+  "sam altman", "elon musk", "jensen huang", "sundar pichai",
+  "satya nadella", "mark zuckerberg", "tim cook", "jeff bezos",
+  "andy jassy", "lisa su", "pat gelsinger", "dario amodei",
+];
+const CELEBRITY_MARKERS = [
+  "actor", "actress", "singer", "influencer", "athlete", "footballer",
+  "celebrity", "kardashian", "taylor swift", "beyoncé", "beyonce",
+  "drake", "rihanna", "ariana", "justin bieber", "selena gomez",
+];
 
-  const prompt = `You are a Senior Editor at The Economist. Score this news article on three dimensions. Be precise — do NOT default to 5.
+// ── Rule 3: Hard-Floor Penalties ─────────────────────────────────────────────
+const LIFESTYLE_PENALTIES = [
+  "red carpet", "box office", "tournament", " match ", "season finale",
+  "collection", "runway", "dating", "rumor", "rumour", "breakup",
+  "wedding", "divorce", "pregnant", "baby shower", "fashion week",
+];
+const MARKET_NOISE = [
+  "stock to watch", "price target", "should you buy", "best deals",
+  "buy the dip", "hot stock", "top picks", "analyst upgrades",
+];
 
-Category: ${categoryLabel}
-Title: ${article.title}
-Source: ${article.source}
-Body: ${bodyContext}
+// ── Rule 4: Innovation Significance ─────────────────────────────────────────
+const SIGNIFICANCE_WORDS = [
+  "groundbreaking", "breakthrough", "unprecedented", "sovereign", "sanctions",
+  "escalation", "paradigm", "fundamental", "bilateral", "multilateral",
+  "strategic", "legislative", "regulatory", "landmark", "inaugural",
+  "disruptive", "quantum", "semiconductor", "foundational", "framework",
+  "ratified", "tension", "accord", "treaty", "provision",
+  "infrastructure", "nationalized", "standardization", "recession", "inflationary",
+  "surge", "collapse", "acquisition", "merger", "monopoly",
+  "antitrust", "embargo", "deployment", "integration", "automation",
+  "proprietary", "open-source", "benchmark", "clinical", "validation",
+  "consensus", "coalition", "aggression", "deficit",
+];
+const GENERIC_PRODUCT_NOISE = [
+  "leak", "rumor", "rumour", "unveils new color", "pre-order", "preorder",
+  " review", "hands-on", "first look", "unboxing", "specs revealed",
+  "release date", "price revealed",
+];
 
-IMPACT (real-world consequence — people, capital, policy affected):
-  9-10 = market-moving, central bank decision, major geopolitical event, national emergency
-  7-8  = significant national/corporate policy, major earnings miss, notable diplomatic shift
-  5-6  = regional story, moderate update, meaningful but limited consequence
-  3-4  = niche or local story, minor incremental update
-  1-2  = opinion, lifestyle, product review, press release, no real-world consequence
+// ── Rule 5: Macro vs Micro ───────────────────────────────────────────────────
+const MACRO_KEYWORDS = [
+  "interest rate", "interest rates", "tariff", "tariffs", "gdp",
+  "sanctions", "trade war", "policy", "regulation", "federal reserve",
+  "central bank", "inflation", "recession", "fiscal", "monetary",
+  "geopolit", "diplomatic", "treaty", "legislation", "congress", "parliament",
+];
+const MICRO_KEYWORDS = [
+  "new app feature", "office move", "quarterly earnings",
+  "rebrands", "launches podcast", "hires cmo", "appoints new",
+  "redesigns logo", "opens new store", "new headquarters",
+];
 
-NOVELTY (how new is the information — not a repeat or commentary on old news):
-  9-10 = breaking, no prior signals, genuinely changes the picture
-  7-8  = important new development, meaningfully advances an ongoing story
-  5-6  = anticipated update, confirms what markets/analysts expected
-  3-4  = routine, minor new detail on stale story
-  1-2  = pure commentary, analysis of old news, no new facts
+// ── Scoring engine ───────────────────────────────────────────────────────────
+function scoreArticle(article) {
+  // Combine title + description for matching; lowercase for case-insensitive
+  const raw  = `${article.title || ""} ${article.description || ""} ${article.content?.slice(0, 500) || ""}`;
+  const text = raw.toLowerCase();
 
-RELEVANCE (fit to "${categoryLabel}" — be strict):
-  9-10 = this IS the core topic, directly and specifically about it
-  7-8  = closely related with clear direct connection
-  5-6  = tangential, requires a stretch to connect
-  3-4  = weakly related, mostly about something else
-  1-2  = unrelated to this category
+  let score = 50; // baseline
+  const reasons = [];
 
-CALIBRATION — before scoring, ask yourself:
-- Is this just an opinion piece? → Impact ≤ 3, Novelty ≤ 3
-- Is this a product review or gadget roundup? → All scores ≤ 4
-- Is this breaking news with market/policy consequences? → Impact ≥ 8
-- Does the title use "here's why" / "top 10" / "you need to know"? → Novelty ≤ 3
-
-Return ONLY this exact JSON, absolutely nothing else before or after it:
-{"impact":7,"novelty":6,"relevance":8,"average":7.0,"reason":"One specific sentence explaining the scores"}`;
-
-  try {
-    const result = await model.generateContent(prompt);
-    const raw = result.response.text().trim();
-    console.log(`     RAW: ${raw.slice(0, 120)}`);
-
-    // Strip markdown fences, then extract JSON object
-    const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
-    const jsonMatch = cleaned.match(/\{[\s\S]*?\}/);
-    if (!jsonMatch) throw new Error(`No JSON object in: ${raw.slice(0, 100)}`);
-
-    const s = JSON.parse(jsonMatch[0]);
-    const impact    = Math.min(10, Math.max(1, Math.round(Number(s.impact))    || 5));
-    const novelty   = Math.min(10, Math.max(1, Math.round(Number(s.novelty))   || 5));
-    const relevance = Math.min(10, Math.max(1, Math.round(Number(s.relevance)) || 5));
-    const average   = parseFloat(((impact + novelty + relevance) / 3).toFixed(2));
-
-    return { ...article, score_impact: impact, score_novelty: novelty, score_relevance: relevance, score_average: average, score_reason: s.reason || "" };
-
-  } catch (err) {
-    console.error(`     ✗ FAILED "${article.title.slice(0, 50)}": ${err.message}`);
-    return { ...article, score_impact: 4, score_novelty: 4, score_relevance: 4, score_average: 4.0, score_reason: `Scoring failed: ${err.message}` };
+  // ── Rule 1: Geopolitical Weight ──────────────────────────────────────────
+  let geoHit = false;
+  if (GEO_TIER1.some((kw) => text.includes(kw))) {
+    score += 15; reasons.push("Tier1-geo(+15)"); geoHit = true;
   }
+  if (GEO_TIER2.some((kw) => text.includes(kw))) {
+    score += 12; reasons.push("Tier2-geo(+12)"); geoHit = true;
+  }
+  if (GEO_TIER3.some((kw) => text.includes(kw))) {
+    score += 8; reasons.push("Tier3-geo(+8)"); geoHit = true;
+  }
+  if (!geoHit && GEO_TIER4.some((kw) => text.includes(kw))) {
+    score -= 10; reasons.push("Tier4-geo(-10)");
+  }
+
+  // ── Rule 2: Protagonist Filter ───────────────────────────────────────────
+  if (WORLD_LEADERS.some((name) => text.includes(name.toLowerCase()))) {
+    score += 10; reasons.push("world-leader(+10)");
+  } else if (TECH_TITANS.some((name) => text.includes(name.toLowerCase()))) {
+    score += 8; reasons.push("tech-titan(+8)");
+  }
+  if (CELEBRITY_MARKERS.some((kw) => text.includes(kw))) {
+    score -= 15; reasons.push("celebrity(-15)");
+  }
+  // No recognizable org or leader mentioned
+  const hasOrg = /\b(apple|google|microsoft|nvidia|meta|amazon|openai|anthropic|deepmind|tesla|samsung|tsmc|fed|imf|world bank|un |nato|asean|eu |sec |fbi|cia|pentagon|white house|congress|senate)\b/.test(text);
+  if (!hasOrg && !WORLD_LEADERS.some((n) => text.includes(n.toLowerCase())) && !TECH_TITANS.some((n) => text.includes(n.toLowerCase()))) {
+    score -= 5; reasons.push("no-entity(-5)");
+  }
+
+  // ── Rule 3: Hard-Floor Penalties ─────────────────────────────────────────
+  if (LIFESTYLE_PENALTIES.some((kw) => text.includes(kw))) {
+    score -= 30; reasons.push("lifestyle(-30)");
+  }
+  if (MARKET_NOISE.some((kw) => text.includes(kw))) {
+    score -= 10; reasons.push("market-noise(-10)");
+  }
+
+  // ── Rule 4: Innovation Significance ──────────────────────────────────────
+  const sigMatches = SIGNIFICANCE_WORDS.filter((kw) => text.includes(kw));
+  if (sigMatches.length > 0) {
+    // Cap at +15 regardless of how many significance words match
+    score += 15; reasons.push(`significance(+15)[${sigMatches.slice(0,3).join(",")}]`);
+  }
+  if (GENERIC_PRODUCT_NOISE.some((kw) => text.includes(kw))) {
+    score -= 10; reasons.push("product-noise(-10)");
+  }
+
+  // ── Rule 5: Macro vs Micro ────────────────────────────────────────────────
+  if (MACRO_KEYWORDS.some((kw) => text.includes(kw))) {
+    score += 12; reasons.push("macro(+12)");
+  }
+  if (MICRO_KEYWORDS.some((kw) => text.includes(kw))) {
+    score -= 10; reasons.push("micro(-10)");
+  }
+
+  // ── Normalise to 0–10 scale ───────────────────────────────────────────────
+  // Raw score range is roughly 0–120; clamp then map to 1–10
+  const clamped   = Math.max(0, Math.min(120, score));
+  const normalised = parseFloat(((clamped / 120) * 9 + 1).toFixed(1)); // maps 0→1.0, 120→10.0
+
+  return {
+    ...article,
+    score_raw:      score,
+    score_average:  normalised,
+    score_impact:   normalised, // kept for template compatibility
+    score_novelty:  normalised,
+    score_relevance: normalised,
+    score_reason:   reasons.join(" | ") || "baseline",
+  };
 }
 
 async function scoreAllArticles(newsByCategory) {
-  console.log("\n🎯 Scoring articles (one call per article)...");
+  console.log("\n🎯 Scoring articles (deterministic rule-based engine)...");
   const scored = {};
 
   for (const [label, { emoji, articles }] of Object.entries(newsByCategory)) {
@@ -79,18 +168,16 @@ async function scoreAllArticles(newsByCategory) {
       continue;
     }
 
-    console.log(`  → [${label}] ${articles.length} articles`);
-    const results = [];
+    console.log(`  → [${label}]`);
+    const results = articles.map((a) => scoreArticle(a));
 
-    for (const article of articles) {
-      const s = await scoreOne(article, label);
-      console.log(`     ${s.score_average}/10 (I:${s.score_impact} N:${s.score_novelty} R:${s.score_relevance}) — "${article.title.slice(0, 55)}"`);
-      results.push(s);
-      await new Promise((r) => setTimeout(r, 6200));
-    }
-
+    // Sort best-first
     results.sort((a, b) => b.score_average - a.score_average);
-    console.log(`     Ranked: [${results.map((a) => a.score_average.toFixed(1)).join(", ")}]`);
+
+    results.forEach((a) => {
+      console.log(`     ${a.score_average}/10 (raw:${a.score_raw}) — "${a.title.slice(0, 55)}" [${a.score_reason}]`);
+    });
+
     scored[label] = { emoji, articles: results };
   }
 
