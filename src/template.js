@@ -143,7 +143,7 @@ function buildCategorySection(label, emoji, clusters) {
 </table>`;
 }
 
-function buildEmailHTML(clusteredByCategory) {
+function buildEmailHTML(clusteredByCategory, pipelineStats = {}) {
   const dateStr = formatDate();
   const totalClusters = Object.values(clusteredByCategory).reduce((s, { clusters }) => s + (clusters?.length || 0), 0);
   const totalSources  = Object.values(clusteredByCategory).reduce((s, { clusters }) =>
@@ -170,7 +170,14 @@ function buildEmailHTML(clusteredByCategory) {
     <p style="margin:0 0 6px;font-size:10px;font-weight:700;color:#facc15;text-transform:uppercase;letter-spacing:3px;">Personalized Intelligence Brief</p>
     <h1 style="margin:0 0 8px;font-size:26px;font-weight:900;color:#f8fafc;line-height:1.2;">Your Daily Brief ☕</h1>
     <p style="margin:0 0 4px;font-size:13px;color:#e2e8f0;">${dateStr} &nbsp;·&nbsp; Singapore Time</p>
-    <p style="margin:0 0 20px;font-size:11px;color:#94a3b8;">${totalClusters} story clusters &nbsp;·&nbsp; ${totalSources} sources analysed</p>
+    <p style="margin:0 0 6px;font-size:11px;color:#94a3b8;">${totalClusters} stories in today's digest &nbsp;·&nbsp; ${totalSources} sources</p>
+    <p style="margin:0 0 20px;font-size:10px;color:#64748b;">
+      ${pipelineStats.totalFetched || "?"} articles ingested
+      &nbsp;→&nbsp; ${pipelineStats.totalAfterFilter || "?"} after date filter
+      &nbsp;→&nbsp; ${pipelineStats.totalEvaluated || "?"} evaluated
+      &nbsp;→&nbsp; ${pipelineStats.totalHidden || "?"} below threshold
+      &nbsp;→&nbsp; <strong style="color:#facc15;">${pipelineStats.totalShared || totalClusters} shared</strong>
+    </p>
     <table cellpadding="0" cellspacing="4"><tr>
       <td style="background:#1e293b;border:1px solid #334155;border-radius:20px;padding:4px 11px;font-size:11px;color:#e2e8f0;font-weight:600;">💻 Tech</td>
       <td width="4"></td>

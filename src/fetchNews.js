@@ -1,27 +1,22 @@
 // src/fetchNews.js
-// Guardian API is PRIMARY for Tech, AI, US-China, Macro (full article body available)
-// NewsData.io is SECONDARY for SEA/Singapore only (Guardian SEA coverage is thin)
+// Guardian API  — PRIMARY for Tech, AI, US-China, Macro (full body text)
+// NewsData.io   — SECONDARY for SEA/Singapore
+// Reddit JSON   — TERTIARY for all categories (no auth needed, public .json endpoint)
 const axios = require("axios");
 
-const NEWSDATA_API_KEY  = process.env.NEWSDATA_API_KEY;
-const GUARDIAN_API_KEY  = process.env.GUARDIAN_API_KEY;
+const NEWSDATA_API_KEY = process.env.NEWSDATA_API_KEY;
+const GUARDIAN_API_KEY = process.env.GUARDIAN_API_KEY;
 
 const GUARDIAN_BASE = "https://content.guardianapis.com/search";
 const NEWSDATA_BASE  = "https://newsdata.io/api/1/latest";
 
-// ── Guardian section + query config ─────────────────────────────────────────
-// Sections: technology | business | world | science | environment
-// show-fields=bodyText gives full article text — huge benefit for scoring quality
-// order-by=newest ensures freshest articles
-// page-size=10 = max per call on free tier
-
+// ── Guardian categories ───────────────────────────────────────────────────────
 const GUARDIAN_CATEGORIES = [
   {
     label: "Technology & Consumer Technology",
     emoji: "💻",
     section: "technology",
     q: "technology OR semiconductor OR software OR cybersecurity OR hardware",
-    // Exclude lifestyle/gadget fluff within the tech section
     tag: "-technology/games",
   },
   {
@@ -41,14 +36,13 @@ const GUARDIAN_CATEGORIES = [
   {
     label: "Macroeconomics",
     emoji: "📈",
-    // business section for markets/central bank; world for broader economic policy
     section: "business",
     q: "Federal Reserve OR interest rates OR inflation OR GDP OR recession OR central bank OR global economy OR bond market",
     tag: "",
   },
 ];
 
-// SEA/Singapore stays on NewsData — Guardian coverage of the region is thin
+// ── NewsData categories (SEA only) ───────────────────────────────────────────
 const NEWSDATA_CATEGORIES = [
   {
     label: "South-East Asia & Singapore",
@@ -58,7 +52,18 @@ const NEWSDATA_CATEGORIES = [
   },
 ];
 
-// ── Guardian fetcher ─────────────────────────────────────────────────────────
+// ── Reddit subreddits → category mapping ─────────────────────────────────────
+// Using public .json endpoint — no OAuth, no API key, completely free.
+// Reddit allows this for personal/non-commercial use with a descriptive User-Agent.
+// We fetch 'hot' posts (top 25) and map them to the relevant category.
+// upvote_ratio and score are used as additional quality signals by the scorer.
+const REDDIT_SOURCES = [
+  { subreddit: "worldnews",  label: "US-China Relations",               emoji: "🌐", limit: 25 },
+  { subreddit: "technology", label: "Technology & Consumer Technology",  emoji: "💻", limit: 25 },
+  { subreddit: "singapore",  label: "South-East Asia & Singapore",       emoji: "🌏", limit: 25 },
+];
+
+// ── Fetchers ─────────────────────────────────────────────────────────────────
 async function fetchFromGuardian(cat) {
   const params = {
     "api-key":     GUARDIAN_API_KEY,
@@ -66,7 +71,6 @@ async function fetchFromGuardian(cat) {
     section:       cat.section,
     "order-by":    "newest",
     "page-size":   10,
-    // Pull full body text — this is the key advantage over NewsData
     "show-fields": "bodyText,trailText,headline,shortUrl,wordcount",
   };
   if (cat.tag) params.tag = cat.tag;
@@ -74,99 +78,131 @@ async function fetchFromGuardian(cat) {
   try {
     const res = await axios.get(GUARDIAN_BASE, { params, timeout: 20000 });
     const status = res.data?.response?.status;
-    const total  = res.data?.response?.total || 0;
-    console.log(`     Guardian status: ${status} | total: ${total}`);
+    console.log(`     Guardian: ${status} | total: ${res.data?.response?.total || 0}`);
+    if (status !== "ok") { console.error("     Guardian error:", JSON.stringify(res.data)); return []; }
 
-    if (status !== "ok") {
-      console.error(`     Guardian error:`, JSON.stringify(res.data));
-      return [];
-    }
-
-    const results = res.data?.response?.results || [];
-    return results.map((a) => {
-      const fields = a.fields || {};
+    return (res.data?.response?.results || []).map((a) => {
+      const f = a.fields || {};
       return {
-        title:       fields.headline  || a.webTitle || "No title",
-        description: fields.trailText || "",
-        // Full body text available — strip HTML tags for clean text
-        content:     (fields.bodyText || fields.trailText || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
-        url:         fields.shortUrl  || a.webUrl || "#",
+        title:       f.headline  || a.webTitle || "No title",
+        description: f.trailText || "",
+        content:     (f.bodyText || f.trailText || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+        url:         f.shortUrl  || a.webUrl || "#",
         source:      "theguardian",
         pubDate:     a.webPublicationDate || "",
-        wordcount:   parseInt(fields.wordcount) || 0,  // Signal 2: used for scoring
+        wordcount:   parseInt(f.wordcount) || 0,
         category:    cat.label,
         emoji:       cat.emoji,
       };
     });
   } catch (err) {
-    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-    console.error(`     Guardian FETCH ERROR: ${detail}`);
+    console.error(`     Guardian FETCH ERROR: ${err.response?.data ? JSON.stringify(err.response.data) : err.message}`);
     return [];
   }
 }
 
-// ── NewsData fetcher (SEA only) ──────────────────────────────────────────────
 async function fetchFromNewsData(cat) {
   const params = {
-    apikey:          NEWSDATA_API_KEY,
-    q:               cat.query,
-    language:        "en",
-    size:            10,
-    removeduplicate: 1,
-    domainurl:       cat.domainurl,
+    apikey: NEWSDATA_API_KEY, q: cat.query, language: "en",
+    size: 10, removeduplicate: 1, domainurl: cat.domainurl,
   };
-
   try {
     const res = await axios.get(NEWSDATA_BASE, { params, timeout: 20000 });
-    console.log(`     NewsData status: ${res.data.status} | totalResults: ${res.data.totalResults}`);
+    console.log(`     NewsData: ${res.data.status} | total: ${res.data.totalResults}`);
+    if (res.data.status !== "success") { console.error("     NewsData error:", JSON.stringify(res.data)); return []; }
 
-    if (res.data.status !== "success") {
-      console.error(`     NewsData error:`, JSON.stringify(res.data));
-      return [];
-    }
-
-    const raw = res.data.results || [];
-    return raw.map((a) => ({
-      title:       a.title       || "No title",
-      description: a.description || "",
-      content:     a.content     || a.description || a.title || "",
-      url:         a.link        || "#",
-      source:      a.source_id   || "Unknown",
-      pubDate:     a.pubDate     || "",
-      category:    cat.label,
-      emoji:       cat.emoji,
+    return (res.data.results || []).map((a) => ({
+      title: a.title || "No title", description: a.description || "",
+      content: a.content || a.description || a.title || "",
+      url: a.link || "#", source: a.source_id || "Unknown",
+      pubDate: a.pubDate || "", wordcount: 0,
+      category: cat.label, emoji: cat.emoji,
     }));
   } catch (err) {
-    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-    console.error(`     NewsData FETCH ERROR: ${detail}`);
+    console.error(`     NewsData FETCH ERROR: ${err.response?.data ? JSON.stringify(err.response.data) : err.message}`);
     return [];
   }
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-async function fetchAllNews() {
-  console.log("📡 Fetching news (Guardian PRIMARY for Tech/AI/US-China/Macro | NewsData for SEA)...");
-  const results = {};
+async function fetchFromReddit(src) {
+  // Public .json endpoint — no auth needed for read-only public subreddit data
+  const url = `https://www.reddit.com/r/${src.subreddit}/hot.json?limit=${src.limit}`;
+  try {
+    const res = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        // Reddit requires a descriptive User-Agent for public JSON access
+        "User-Agent": "DailyBriefEmailer/1.0 (personal news digest; non-commercial)",
+      },
+    });
 
-  // Guardian categories
+    const posts = res.data?.data?.children || [];
+    console.log(`     Reddit r/${src.subreddit}: ${posts.length} posts`);
+
+    return posts
+      .map((p) => p.data)
+      // Filter: skip self-posts with no external URL, pinned mod posts, NSFW
+      .filter((p) => !p.is_self && !p.stickied && !p.over_18 && p.url && p.score > 50)
+      .map((p) => ({
+        title:        p.title || "No title",
+        description:  p.selftext?.slice(0, 300) || "",
+        content:      p.selftext?.slice(0, 1000) || p.title || "",
+        url:          p.url || `https://reddit.com${p.permalink}`,
+        source:       `reddit/r/${src.subreddit}`,
+        pubDate:      new Date(p.created_utc * 1000).toISOString(),
+        wordcount:    0,
+        reddit_score: p.score,          // upvotes — used as quality signal in scorer
+        reddit_ratio: p.upvote_ratio,   // 0–1 — filters out controversial/downvoted posts
+        category:     src.label,
+        emoji:        src.emoji,
+      }));
+  } catch (err) {
+    console.error(`     Reddit r/${src.subreddit} FETCH ERROR: ${err.message}`);
+    return [];
+  }
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+// Returns { newsByCategory, stats }
+// stats = { fetched: { [category]: count }, total: N }
+async function fetchAllNews() {
+  console.log("📡 Fetching (Guardian + NewsData + Reddit)...");
+  const results = {};
+  const fetchStats = {};
+
+  // 1. Guardian
   for (const cat of GUARDIAN_CATEGORIES) {
     console.log(`  → [Guardian] ${cat.label}`);
     const articles = await fetchFromGuardian(cat);
-    results[cat.label] = { emoji: cat.emoji, articles };
-    console.log(`     → ${articles.length} articles`);
+    results[cat.label] = { emoji: cat.emoji, articles: articles };
+    fetchStats[cat.label] = (fetchStats[cat.label] || 0) + articles.length;
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  // NewsData categories (SEA)
+  // 2. NewsData (SEA)
   for (const cat of NEWSDATA_CATEGORIES) {
     console.log(`  → [NewsData] ${cat.label}`);
     const articles = await fetchFromNewsData(cat);
-    results[cat.label] = { emoji: cat.emoji, articles };
-    console.log(`     → ${articles.length} articles`);
+    if (!results[cat.label]) results[cat.label] = { emoji: cat.emoji, articles: [] };
+    results[cat.label].articles.push(...articles);
+    fetchStats[cat.label] = (fetchStats[cat.label] || 0) + articles.length;
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  return results;
+  // 3. Reddit (merges into existing categories)
+  for (const src of REDDIT_SOURCES) {
+    console.log(`  → [Reddit] r/${src.subreddit} → ${src.label}`);
+    const articles = await fetchFromReddit(src);
+    if (!results[src.label]) results[src.label] = { emoji: src.emoji, articles: [] };
+    results[src.label].articles.push(...articles);
+    fetchStats[src.label] = (fetchStats[src.label] || 0) + articles.length;
+    await new Promise((r) => setTimeout(r, 1500)); // be polite to Reddit
+  }
+
+  const totalFetched = Object.values(fetchStats).reduce((s, n) => s + n, 0);
+  console.log(`\n  Total fetched: ${totalFetched} articles across ${Object.keys(results).length} categories`);
+
+  return { newsByCategory: results, fetchStats, totalFetched };
 }
 
 module.exports = { fetchAllNews };

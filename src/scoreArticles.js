@@ -157,6 +157,18 @@ function scoreArticle(article) {
     score -= 5; reasons.push(`wordcount(-5)[${wc}w]`); // very short brief
   }
 
+  // ── Signal: Reddit upvote score (if article came from Reddit) ───────────
+  // High upvote count = crowd-validated importance
+  const rs = parseInt(article.reddit_score) || 0;
+  const rr = parseFloat(article.reddit_ratio) || 0;
+  if (rs >= 10000 && rr >= 0.8) {
+    score += 20; reasons.push(`reddit-viral(+20)[${rs}↑]`);
+  } else if (rs >= 3000 && rr >= 0.75) {
+    score += 12; reasons.push(`reddit-hot(+12)[${rs}↑]`);
+  } else if (rs >= 500 && rr >= 0.7) {
+    score += 6; reasons.push(`reddit-notable(+6)[${rs}↑]`);
+  }
+
   // ── Normalise to 1.0–10.0 ────────────────────────────────────────────────
   const clamped    = Math.max(0, Math.min(120, score));
   const normalised = parseFloat(((clamped / 120) * 9 + 1).toFixed(1));
@@ -220,7 +232,7 @@ async function scoreAllArticles(newsByCategory) {
     results.sort((a, b) => b.score_average - a.score_average);
 
     // Filter out articles below 4.0
-    const MIN_SCORE = 4.0;
+    const MIN_SCORE = 3.5;
     const filtered = results.filter((a) => a.score_average >= MIN_SCORE);
     const dropped  = results.length - filtered.length;
 
@@ -234,8 +246,22 @@ async function scoreAllArticles(newsByCategory) {
     scored[label] = { emoji, articles: filtered };
   }
 
-  // Deduplicate across categories after scoring (so the highest-scoring category keeps the article)
-  return deduplicateAcrossCategories(scored);
+  // Deduplicate across categories after scoring
+  const deduped = deduplicateAcrossCategories(scored);
+
+  // Build stats: how many articles evaluated vs passed the threshold
+  const scoreStats = { evaluated: 0, passed: 0, hidden: 0 };
+  for (const { articles } of Object.values(deduped)) {
+    scoreStats.passed += articles.length;
+  }
+  // 'evaluated' = total scored before dedup/filter (counted inside the loop above)
+  // We'll re-count from the scored object
+  for (const { articles } of Object.values(scored)) {
+    scoreStats.evaluated += articles.length;
+  }
+  scoreStats.hidden = scoreStats.evaluated - scoreStats.passed;
+
+  return { scoredByCategory: deduped, scoreStats };
 }
 
 module.exports = { scoreAllArticles };
