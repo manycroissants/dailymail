@@ -28,6 +28,8 @@ jobs:
           GUARDIAN_API_KEY:  ${{ secrets.GUARDIAN_API_KEY }}
           GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
           RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
         run: node index.js
 
       - name: Log failure
