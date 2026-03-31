@@ -146,6 +146,17 @@ function scoreArticle(article) {
     score -= 10; reasons.push("micro(-10)");
   }
 
+  // ── Signal 2: Guardian wordcount bonus ───────────────────────────────────
+  // Guardian returns wordcount in the API response — longer pieces = more substantial
+  const wc = parseInt(article.wordcount) || 0;
+  if (wc >= 2000) {
+    score += 15; reasons.push(`wordcount(+15)[${wc}w]`);
+  } else if (wc >= 1000) {
+    score += 8; reasons.push(`wordcount(+8)[${wc}w]`);
+  } else if (wc > 0 && wc < 300) {
+    score -= 5; reasons.push(`wordcount(-5)[${wc}w]`); // very short brief
+  }
+
   // ── Normalise to 1.0–10.0 ────────────────────────────────────────────────
   const clamped    = Math.max(0, Math.min(120, score));
   const normalised = parseFloat(((clamped / 120) * 9 + 1).toFixed(1));

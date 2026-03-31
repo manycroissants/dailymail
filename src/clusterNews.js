@@ -1,9 +1,29 @@
-// src/clusterNews.js — Clusters same-event articles, 30-word summary cap
+// src/clusterNews.js — Cross-source clustering using Jaccard title similarity
+// Signal 1: same story detected by word overlap → merged cluster, summary from highest scorer
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
+// ── Jaccard similarity on title word sets ────────────────────────────────────
+// Returns 0.0–1.0. Threshold of 0.25 catches same-story headlines phrased differently.
+function titleWords(title) {
+  const STOP = new Set(["the","a","an","of","in","on","at","to","for","and","or","but","is","are","was","were","as","by","with","its","it","he","she","they","that","this","from","says","said","after","over","new","how","why","what","who","has","have","will","not","be","been","about","more","than"]);
+  return new Set(
+    (title || "").toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w))
+  );
+}
+
+function jaccardSimilarity(setA, setB) {
+  if (setA.size === 0 || setB.size === 0) return 0;
+  const intersection = [...setA].filter((w) => setB.has(w)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return intersection / union;
+}
+
+const SIMILARITY_THRESHOLD = 0.25; // 25% word overlap = same story
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function applyBlueHighlights(summary, allSourceTexts) {
   const combined = allSourceTexts.join(" ");
   const sourceWords = combined.replace(/\s+/g, " ").trim().split(" ");
@@ -20,19 +40,16 @@ function applyBlueHighlights(summary, allSourceTexts) {
     const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(`(?<!<[^>]*)${escaped}(?![^<]*>)`, "gi");
     if (regex.test(highlighted)) {
-      highlighted = highlighted.replace(regex,
-        `<span style="color:#2563eb;font-weight:bold;">$&</span>`);
+      highlighted = highlighted.replace(regex, `<span style="color:#2563eb;font-weight:bold;">$&</span>`);
     }
   }
   return highlighted;
 }
 
-// Hard truncate to 30 words as a safety net
 function enforce30Words(text) {
   if (!text) return text;
   const words = text.trim().split(/\s+/);
-  if (words.length <= 30) return text;
-  return words.slice(0, 30).join(" ") + "…";
+  return words.length <= 30 ? text : words.slice(0, 30).join(" ") + "…";
 }
 
 function guessBiasLabel(sources) {
@@ -41,158 +58,137 @@ function guessBiasLabel(sources) {
   if (/channelnewsasia|cna|straits times|todayonline/.test(text)) return "[Singapore-Centric]";
   if (/reuters|associated press|\bap\b|bbc/.test(text)) return "[Western Wire / Neutral]";
   if (/bloomberg|financial times|\bft\b|wall street journal|\bwsj\b/.test(text)) return "[Financial / Markets]";
-  if (/guardian|new york times|\bnyt\b|washington post/.test(text)) return "[Western Media]";
+  if (/guardian/.test(text)) return "[Western Media]";
   return sources.length > 1 ? "[Multi-Source]" : "[General]";
 }
 
-async function buildSingleCluster(article) {
-  const sourceText = (article.content || article.description || article.title).slice(0, 2500);
+// ── Step 1: Group articles into same-story clusters using Jaccard ─────────────
+function groupBySimilarity(articles) {
+  const groups = [];    // array of article arrays
+  const assigned = new Set();
 
-  const prompt = `Summarize this news article in ONE sentence. Hard limit: 30 words maximum. Be specific — include the key actor, action, and consequence. No filler words.
+  for (let i = 0; i < articles.length; i++) {
+    if (assigned.has(i)) continue;
+    const group = [articles[i]];
+    assigned.add(i);
+    const wordsI = titleWords(articles[i].title);
+
+    for (let j = i + 1; j < articles.length; j++) {
+      if (assigned.has(j)) continue;
+      const wordsJ = titleWords(articles[j].title);
+      if (jaccardSimilarity(wordsI, wordsJ) >= SIMILARITY_THRESHOLD) {
+        group.push(articles[j]);
+        assigned.add(j);
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+// ── Step 2a: Summarise a single article ──────────────────────────────────────
+async function summariseSingle(article) {
+  const sourceText = (article.content || article.description || article.title).slice(0, 2500);
+  const prompt = `Summarize this news article in ONE sentence. Hard limit: 30 words. Include key actor, action, consequence. No filler.
 
 Title: ${article.title}
 Content: ${sourceText}
 
 Respond ONLY with valid JSON (no markdown):
-{
-  "summary": "Your 30-word-max sentence here.",
-  "bias_label": "One of: [Singapore-Centric],[US-Centric],[Western Media],[State-Affiliated],[China-Centric],[Financial/Markets],[Neutral/Analytical],[Right-Leaning],[Left-Leaning],[Multi-Source],[General]",
-  "bias_note": "One sentence on framing.",
-  "is_polarized": false,
-  "counter_headline": null
-}`;
+{"summary":"...","bias_label":"One of: [Singapore-Centric],[US-Centric],[Western Media],[State-Affiliated],[China-Centric],[Financial/Markets],[Neutral/Analytical],[Multi-Source],[General]","bias_note":"One sentence on framing.","is_polarized":false,"counter_headline":null}`;
 
   try {
     const result = await model.generateContent(prompt);
-    const raw = result.response.text().trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
-    const parsed = JSON.parse(raw);
-    const summary = enforce30Words(parsed.summary);
+    const raw = result.response.text().trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch[0]);
     return {
-      type: "single",
-      headline: article.title,
-      summary: applyBlueHighlights(summary, [sourceText]),
-      bias_label: parsed.bias_label || guessBiasLabel([article.source]),
-      bias_note: parsed.bias_note || "",
-      is_polarized: !!parsed.is_polarized,
+      summary:          enforce30Words(parsed.summary),
+      bias_label:       parsed.bias_label || guessBiasLabel([article.source]),
+      bias_note:        parsed.bias_note || "",
+      is_polarized:     !!parsed.is_polarized,
       counter_headline: parsed.counter_headline || null,
-      score_average:   article.score_average   || 0,
-      score_impact:    article.score_impact    || 0,
-      score_novelty:   article.score_novelty   || 0,
-      score_relevance: article.score_relevance || 0,
-      score_reason:    article.score_reason    || "",
-      sources: [{ title: article.title, url: article.url, source: article.source }],
     };
   } catch (err) {
-    console.error(`  ✗ Single cluster error: ${err.message}`);
+    console.error(`  ✗ Summarise error: ${err.message}`);
     return {
-      type: "single",
-      headline: article.title,
-      summary: enforce30Words(article.description || article.title),
-      bias_label: guessBiasLabel([article.source]),
-      bias_note: "", is_polarized: false, counter_headline: null,
-      score_average: article.score_average || 0,
-      score_impact: article.score_impact || 0,
-      score_novelty: article.score_novelty || 0,
-      score_relevance: article.score_relevance || 0,
-      score_reason: article.score_reason || "",
-      sources: [{ title: article.title, url: article.url, source: article.source }],
+      summary:          enforce30Words(article.description || article.title),
+      bias_label:       guessBiasLabel([article.source]),
+      bias_note:        "", is_polarized: false, counter_headline: null,
     };
   }
 }
 
-async function buildMultiCluster(articles, eventTitle) {
-  const allTexts = articles.map((a) => (a.content || a.description || a.title).slice(0, 1200));
-  const combinedContext = articles.map((a, i) => `[${a.source}]\n${allTexts[i]}`).join("\n---\n");
-  const avgScore = (articles.reduce((s, a) => s + (a.score_average || 0), 0) / articles.length).toFixed(1);
+// ── Step 2b: Build a cluster from a group of articles ────────────────────────
+// Signal 1: summary comes from the highest-scored article; all sources are listed
+async function buildCluster(group) {
+  // Sort group by score descending — best article provides the summary
+  group.sort((a, b) => (b.score_average || 0) - (a.score_average || 0));
+  const best = group[0];
 
-  const prompt = `Multiple sources cover the same event. Write ONE unified sentence (max 30 words) that synthesises the key fact, actor, and implication.
+  const summarised = await summariseSingle(best);
+  await new Promise((r) => setTimeout(r, 6200)); // Gemini rate limit
 
-Event: ${eventTitle}
-${combinedContext.slice(0, 3000)}
+  // Blue highlights checked against ALL sources in the cluster
+  const allTexts = group.map((a) => (a.content || a.description || a.title).slice(0, 1500));
+  const highlightedSummary = applyBlueHighlights(summarised.summary, allTexts);
 
-Respond ONLY with valid JSON (no markdown):
-{
-  "headline": "Single definitive headline, max 15 words.",
-  "summary": "One sentence, max 30 words, synthesising all sources.",
-  "bias_label": "One of: [Singapore-Centric],[US-Centric],[Western Media],[State-Affiliated],[China-Centric],[Financial/Markets],[Neutral/Analytical],[Multi-Source]",
-  "bias_note": "Note any framing differences between sources.",
-  "is_polarized": false,
-  "counter_headline": null
-}`;
+  const isCluster = group.length > 1;
+  const avgScore  = parseFloat((group.reduce((s, a) => s + (a.score_average || 0), 0) / group.length).toFixed(1));
 
-  try {
-    const result = await model.generateContent(prompt);
-    const raw = result.response.text().trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
-    const parsed = JSON.parse(raw);
-    const summary = enforce30Words(parsed.summary);
-    return {
-      type: "cluster",
-      headline: parsed.headline || eventTitle,
-      summary: applyBlueHighlights(summary, allTexts),
-      bias_label: parsed.bias_label || guessBiasLabel(articles.map((a) => a.source)),
-      bias_note: parsed.bias_note || "",
-      is_polarized: !!parsed.is_polarized,
-      counter_headline: parsed.counter_headline || null,
-      score_average:   parseFloat(avgScore),
-      score_impact:    Math.max(...articles.map((a) => a.score_impact    || 0)),
-      score_novelty:   Math.max(...articles.map((a) => a.score_novelty   || 0)),
-      score_relevance: Math.max(...articles.map((a) => a.score_relevance || 0)),
-      score_reason:    `Clustered from ${articles.length} sources`,
-      sources: articles.map((a) => ({ title: a.title, url: a.url, source: a.source })),
-    };
-  } catch (err) {
-    console.error(`  ✗ Multi-cluster error: ${err.message}`);
-    return buildSingleCluster(articles[0]);
+  if (isCluster) {
+    console.log(`     🔗 Merged ${group.length} sources: "${best.title.slice(0, 50)}"`);
   }
+
+  return {
+    type:             isCluster ? "cluster" : "single",
+    headline:         best.title,
+    summary:          highlightedSummary,
+    bias_label:       summarised.bias_label,
+    bias_note:        summarised.bias_note,
+    is_polarized:     summarised.is_polarized,
+    counter_headline: summarised.counter_headline,
+    // Score from the best article in the cluster
+    score_average:    best.score_average || 0,
+    score_raw:        best.score_raw || 0,
+    score_reason:     best.score_reason || "",
+    // Signal 1 bonus: cluster size logged but not double-counted in score
+    // (score_average already reflects the best article — cluster size is shown via sources)
+    sources: group.map((a) => ({
+      title:  a.title,
+      url:    a.url,
+      source: a.source,
+      score:  a.score_average || 0,
+    })),
+  };
 }
 
-async function clusterCategory(articles, categoryLabel) {
-  if (articles.length === 0) return [];
-  if (articles.length === 1) return [await buildSingleCluster(articles[0])];
-
-  const articleList = articles.map((a, i) => ({ index: i, title: a.title, source: a.source }));
-  const prompt = `Group these articles by the specific EVENT they cover. Only group articles reporting on the SAME specific event — not just the same broad topic.
-
-${JSON.stringify(articleList, null, 2)}
-
-Return ONLY valid JSON (no markdown):
-[{ "group_id": 0, "indices": [0, 2], "event_title": "Short event label" }]`;
-
-  let groups;
-  try {
-    const result = await model.generateContent(prompt);
-    const raw = result.response.text().trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
-    groups = JSON.parse(raw);
-    await new Promise((r) => setTimeout(r, 6000));
-  } catch (err) {
-    groups = articles.map((_, i) => ({ group_id: i, indices: [i], event_title: articles[i].title }));
-  }
-
-  const clusters = [];
-  for (const group of groups) {
-    const groupArticles = (group.indices || []).filter((i) => i < articles.length).map((i) => articles[i]);
-    if (groupArticles.length === 0) continue;
-    if (groupArticles.length === 1) {
-      clusters.push(await buildSingleCluster(groupArticles[0]));
-    } else {
-      clusters.push(await buildMultiCluster(groupArticles, group.event_title));
-      await new Promise((r) => setTimeout(r, 6000));
-    }
-  }
-  return clusters;
-}
-
+// ── Main export ───────────────────────────────────────────────────────────────
 async function clusterAllNews(scoredByCategory) {
-  console.log("\n🔗 Clustering same-event articles...");
+  console.log("\n🔗 Clustering same-story articles (Jaccard similarity)...");
   const clustered = {};
+
   for (const [label, { emoji, articles }] of Object.entries(scoredByCategory)) {
-    process.stdout.write(`  → [${label}] ${articles.length} articles → `);
-    const clusters = await clusterCategory(articles, label);
+    if (!articles || articles.length === 0) {
+      clustered[label] = { emoji, clusters: [] };
+      continue;
+    }
+
+    console.log(`  → [${label}] ${articles.length} articles`);
+    const groups   = groupBySimilarity(articles);
+    console.log(`     → ${groups.length} story group(s) after similarity clustering`);
+
+    const clusters = [];
+    for (const group of groups) {
+      const cluster = await buildCluster(group);
+      clusters.push(cluster);
+    }
+
+    // Sort clusters by best article score descending
     clusters.sort((a, b) => b.score_average - a.score_average);
-    console.log(`${clusters.length} clusters`);
     clustered[label] = { emoji, clusters };
-    await new Promise((r) => setTimeout(r, 3000));
   }
+
   return clustered;
 }
 

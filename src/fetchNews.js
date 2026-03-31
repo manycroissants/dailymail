@@ -93,6 +93,7 @@ async function fetchFromGuardian(cat) {
         url:         fields.shortUrl  || a.webUrl || "#",
         source:      "theguardian",
         pubDate:     a.webPublicationDate || "",
+        wordcount:   parseInt(fields.wordcount) || 0,  // Signal 2: used for scoring
         category:    cat.label,
         emoji:       cat.emoji,
       };

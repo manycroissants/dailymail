@@ -165,43 +165,44 @@ function buildEmailHTML(clusteredByCategory) {
 <tr><td align="center">
 <table width="100%" style="max-width:640px;margin:0 auto;">
 
-  <!-- HEADER -->
-  <tr><td style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 55%,#1e40af 100%);border-radius:10px 10px 0 0;padding:24px 24px 20px;">
-    <p style="margin:0 0 3px;font-size:10px;font-weight:700;color:#93c5fd;text-transform:uppercase;letter-spacing:2.5px;">Personalized Intelligence Brief</p>
-    <h1 style="margin:0 0 5px;font-size:24px;font-weight:900;color:#ffffff;">Your Daily Brief ☕</h1>
-    <p style="margin:0 0 4px;font-size:12px;color:#bfdbfe;">${dateStr} · Singapore Time</p>
-    <p style="margin:0 0 16px;font-size:11px;color:#93c5fd;">${totalClusters} story clusters · ${totalSources} sources analysed</p>
-    <table cellpadding="0" cellspacing="3"><tr>
-      <td style="background:rgba(255,255,255,0.12);border-radius:20px;padding:3px 9px;font-size:10px;color:#dbeafe;">💻 Tech</td>
-      <td width="3"></td>
-      <td style="background:rgba(255,255,255,0.12);border-radius:20px;padding:3px 9px;font-size:10px;color:#dbeafe;">🤖 AI</td>
-      <td width="3"></td>
-      <td style="background:rgba(255,255,255,0.12);border-radius:20px;padding:3px 9px;font-size:10px;color:#dbeafe;">🌏 SEA</td>
-      <td width="3"></td>
-      <td style="background:rgba(255,255,255,0.12);border-radius:20px;padding:3px 9px;font-size:10px;color:#dbeafe;">🌐 US-China</td>
-      <td width="3"></td>
-      <td style="background:rgba(255,255,255,0.12);border-radius:20px;padding:3px 9px;font-size:10px;color:#dbeafe;">📈 Macro</td>
+  <!-- HEADER — solid dark navy, full contrast -->
+  <tr><td style="background:#0f172a;border-radius:10px 10px 0 0;padding:28px 28px 22px;">
+    <p style="margin:0 0 6px;font-size:10px;font-weight:700;color:#facc15;text-transform:uppercase;letter-spacing:3px;">Personalized Intelligence Brief</p>
+    <h1 style="margin:0 0 8px;font-size:26px;font-weight:900;color:#f8fafc;line-height:1.2;">Your Daily Brief ☕</h1>
+    <p style="margin:0 0 4px;font-size:13px;color:#e2e8f0;">${dateStr} &nbsp;·&nbsp; Singapore Time</p>
+    <p style="margin:0 0 20px;font-size:11px;color:#94a3b8;">${totalClusters} story clusters &nbsp;·&nbsp; ${totalSources} sources analysed</p>
+    <table cellpadding="0" cellspacing="4"><tr>
+      <td style="background:#1e293b;border:1px solid #334155;border-radius:20px;padding:4px 11px;font-size:11px;color:#e2e8f0;font-weight:600;">💻 Tech</td>
+      <td width="4"></td>
+      <td style="background:#1e293b;border:1px solid #334155;border-radius:20px;padding:4px 11px;font-size:11px;color:#e2e8f0;font-weight:600;">🤖 AI</td>
+      <td width="4"></td>
+      <td style="background:#1e293b;border:1px solid #334155;border-radius:20px;padding:4px 11px;font-size:11px;color:#e2e8f0;font-weight:600;">🌏 SEA</td>
+      <td width="4"></td>
+      <td style="background:#1e293b;border:1px solid #334155;border-radius:20px;padding:4px 11px;font-size:11px;color:#e2e8f0;font-weight:600;">🌐 US-China</td>
+      <td width="4"></td>
+      <td style="background:#1e293b;border:1px solid #334155;border-radius:20px;padding:4px 11px;font-size:11px;color:#e2e8f0;font-weight:600;">📈 Macro</td>
     </tr></table>
   </td></tr>
 
-  <!-- LEGEND -->
-  <tr><td style="background:#eff6ff;padding:9px 20px;border-left:1px solid #dbeafe;border-right:1px solid #dbeafe;">
-    <p style="margin:0;font-size:11px;color:#1e40af;line-height:1.6;">
-      <strong>Score key:</strong> 🔥 Must-Read ≥8.5 · ⭐ Top Story ≥7 · 📌 Notable ≥5 · 📉 Low Signal &lt;5 &nbsp;·&nbsp;
-      <span style="color:#2563eb;font-weight:bold;">Blue bold</span> = verbatim phrase from source &nbsp;·&nbsp;
-      🔗 = multiple outlets, same event
+  <!-- LEGEND — dark charcoal, high contrast -->
+  <tr><td style="background:#1e293b;padding:10px 28px;border-left:1px solid #334155;border-right:1px solid #334155;">
+    <p style="margin:0;font-size:11px;color:#cbd5e1;line-height:1.7;">
+      <strong style="color:#f8fafc;">Score key:</strong>
+      🔥 Must-Read ≥8.5 &nbsp;·&nbsp; ⭐ Top Story ≥7 &nbsp;·&nbsp; 📌 Notable ≥5 &nbsp;·&nbsp; 📉 Low Signal &lt;5
+      &nbsp;·&nbsp; <span style="color:#60a5fa;font-weight:700;">Blue bold</span> = verbatim phrase
+      &nbsp;·&nbsp; 🔗 = multiple outlets, same event
     </p>
   </td></tr>
 
   <!-- BODY -->
-  <tr><td style="background:#f1f5f9;padding:16px 12px;border:1px solid #e2e8f0;border-top:none;">
+  <tr><td style="background:#f1f5f9;padding:16px 12px;border:1px solid #334155;border-top:none;">
     ${categorySections}
   </td></tr>
 
   <!-- FOOTER -->
-  <tr><td style="background:#0f172a;border-radius:0 0 10px 10px;padding:16px 24px;text-align:center;">
-    <p style="margin:0 0 3px;font-size:12px;color:#94a3b8;">NewsData.io · Gemini 2.5 Flash · Resend</p>
-    <p style="margin:0;font-size:10px;color:#334155;">chanzeming@hotmail.com · 7:00 PM SGT</p>
+  <tr><td style="background:#0f172a;border-radius:0 0 10px 10px;padding:16px 28px;text-align:center;border-top:2px solid #facc15;">
+    <p style="margin:0 0 4px;font-size:12px;color:#94a3b8;">NewsData.io &nbsp;·&nbsp; Gemini 2.5 Flash &nbsp;·&nbsp; Resend</p>
+    <p style="margin:0;font-size:11px;color:#64748b;">chanzeming@hotmail.com &nbsp;·&nbsp; 7:00 PM SGT</p>
   </td></tr>
 
 </table>
